@@ -1,0 +1,129 @@
+# Pi-hole on Kubernetes (k3s, single-node lab)
+# Demonstrates the same workload deployed via Docker Compose, now expressed
+# in Kubernetes primitives: Namespace, ConfigMap, Secret, Deployment, Service.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pihole
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pihole-config
+  namespace: pihole
+data:
+  TZ: "Asia/Tokyo"
+  FTLCONF_dns_listeningMode: "all"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pihole-secret
+  namespace: pihole
+type: Opaque
+stringData:
+  webpassword: "labdemo"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pihole
+  namespace: pihole
+  labels:
+    app: pihole
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate    # Pi-hole owns host port 53; can't have two replicas overlap
+  selector:
+    matchLabels:
+      app: pihole
+  template:
+    metadata:
+      labels:
+        app: pihole
+    spec:
+      # hostNetwork bypasses the cluster CNI and runs the pod in the host's
+      # network namespace. Standard pattern for pod-as-network-service
+      # (DNS, proxy, sometimes-monitoring). On WSL2 specifically this also
+      # works around CNI sandbox instability seen with hostPort.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: pihole
+          image: pihole/pihole:2025.10.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: dns-udp
+              containerPort: 53
+              protocol: UDP
+            - name: dns-tcp
+              containerPort: 53
+              protocol: TCP
+            - name: web
+              containerPort: 80
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: pihole-config
+          env:
+            - name: FTLCONF_webserver_api_password
+              valueFrom:
+                secretKeyRef:
+                  name: pihole-secret
+                  key: webpassword
+          securityContext:
+            capabilities:
+              add:
+                - NET_ADMIN
+                - SYS_NICE
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          # Probes are tuned for Pi-hole's slow startup (gravity DB download
+          # takes 30-90s on first run). Initial delays are deliberately long
+          # and timeouts are generous to avoid kill-restart loops during
+          # blocklist ingest. Lesson learned the hard way during this lab.
+          startupProbe:
+            httpGet:
+              path: /admin/login
+              port: 80
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30          # allow up to 5 minutes of startup
+          livenessProbe:
+            httpGet:
+              path: /admin/login
+              port: 80
+            periodSeconds: 60
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /admin/login
+              port: 80
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+---
+# Web admin UI exposed via NodePort (30080 -> service:80 -> pod:80)
+apiVersion: v1
+kind: Service
+metadata:
+  name: pihole-web
+  namespace: pihole
+spec:
+  type: NodePort
+  selector:
+    app: pihole
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      nodePort: 30080
