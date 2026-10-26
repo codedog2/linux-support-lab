@@ -123,5 +123,4 @@ Kubernetes concept docs while preparing for LPIC-1.
 
 ## Author
 
-Yaowei Feng — Tokyo. CS bachelor's, Temple University Japan, graduating
-April 2026. Currently preparing LPIC-1.
+Yaowei Feng
